@@ -508,6 +508,169 @@ pub enum Cell<'a> {
     },
 }
 
+#[derive(Debug)]
+enum SerialType {
+    Null,
+    I8,
+    I16,
+    I24,
+    I32,
+    I48,
+    I64,
+    F64,
+    Int0,
+    Int1,
+    Bytes(usize),
+    Text(usize),
+}
+
+impl TryFrom<u64> for SerialType {
+    type Error = io::Error;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(SerialType::Null),
+            1 => Ok(SerialType::I8),
+            2 => Ok(SerialType::I16),
+            3 => Ok(SerialType::I24),
+            4 => Ok(SerialType::I32),
+            5 => Ok(SerialType::I48),
+            6 => Ok(SerialType::I64),
+            7 => Ok(SerialType::F64),
+            8 => Ok(SerialType::Int0),
+            9 => Ok(SerialType::Int1),
+            st if st >= 12 && st % 2 == 0 => {
+                // BLOB
+                let n = ((st - 12) / 2) as usize;
+                Ok(SerialType::Bytes(n))
+            }
+            st if st >= 13 && st % 2 == 1 => {
+                // TEXT
+                let n = ((st - 13) / 2) as usize;
+                Ok(SerialType::Text(n))
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid serial type: {:?}", value),
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CellPayload {
+    header_length: u64,
+    header_len_bytes: usize,
+    serial_types: Vec<SerialType>,
+    columns: Vec<SqliteValue>,
+}
+
+#[derive(Debug)]
+enum SqliteValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+fn decode_payload_values(
+    payload: &[u8],
+    serial_types: &[SerialType],
+    header_length: usize,
+) -> Result<Vec<SqliteValue>, io::Error> {
+    let mut columns: Vec<SqliteValue> = Vec::new();
+
+    let mut body_offset = header_length; // body starts after header
+    for serial_type in serial_types {
+        match serial_type {
+            SerialType::Null => columns.push(SqliteValue::Null),
+            SerialType::I8 => {
+                columns.push(SqliteValue::Integer(payload[body_offset] as i8 as i64));
+                body_offset += 1;
+            }
+            SerialType::I16 => {
+                let val =
+                    i16::from_be_bytes(payload[body_offset..body_offset + 2].try_into().unwrap())
+                        as i64;
+                columns.push(SqliteValue::Integer(val));
+                body_offset += 2;
+            }
+            SerialType::I24 => {
+                let val = ((payload[body_offset] as i32) << 16)
+                    | ((payload[body_offset + 1] as i32) << 8)
+                    | (payload[body_offset + 2] as i32);
+                columns.push(SqliteValue::Integer(val as i64));
+                body_offset += 3;
+            }
+            SerialType::I32 => {
+                let val =
+                    i32::from_be_bytes(payload[body_offset..body_offset + 4].try_into().unwrap())
+                        as i64;
+                columns.push(SqliteValue::Integer(val));
+                body_offset += 4;
+            }
+            SerialType::I48 => {
+                let val = ((payload[body_offset] as i64) << 40)
+                    | ((payload[body_offset + 1] as i64) << 32)
+                    | ((payload[body_offset + 2] as i64) << 24)
+                    | ((payload[body_offset + 3] as i64) << 16)
+                    | ((payload[body_offset + 4] as i64) << 8)
+                    | (payload[body_offset + 5] as i64);
+                columns.push(SqliteValue::Integer(val));
+                body_offset += 6;
+            }
+            SerialType::I64 => {
+                let val =
+                    i64::from_be_bytes(payload[body_offset..body_offset + 8].try_into().unwrap());
+                columns.push(SqliteValue::Integer(val));
+                body_offset += 8;
+            }
+            SerialType::F64 => {
+                let val =
+                    f64::from_be_bytes(payload[body_offset..body_offset + 8].try_into().unwrap());
+                columns.push(SqliteValue::Real(val));
+                body_offset += 8;
+            }
+            SerialType::Int0 => columns.push(SqliteValue::Integer(0)),
+            SerialType::Int1 => columns.push(SqliteValue::Integer(1)),
+            SerialType::Bytes(len) => {
+                let val = payload[body_offset..body_offset + *len].to_vec();
+                columns.push(SqliteValue::Blob(val));
+                body_offset += *len;
+            }
+            SerialType::Text(len) => {
+                let val = std::str::from_utf8(&payload[body_offset..body_offset + *len])
+                    .unwrap_or("<invalid utf8>")
+                    .to_string();
+                columns.push(SqliteValue::Text(val));
+                body_offset += *len;
+            }
+        }
+    }
+    Ok(columns)
+}
+
+fn parse_payload(payload: &[u8]) -> Result<CellPayload, io::Error> {
+    let (header_length, header_len_bytes) = read_varint(payload, 0);
+    let mut serial_types: Vec<SerialType> = Vec::new();
+
+    let mut offset = header_len_bytes;
+    while offset < header_length as usize {
+        let (serial_type_u64, size) = read_varint(payload, offset);
+        let serial_type = SerialType::try_from(serial_type_u64)?;
+        serial_types.push(serial_type);
+        offset += size;
+    }
+    let columns = decode_payload_values(&payload, &serial_types, header_length as usize)?;
+    Ok(CellPayload {
+        header_length,
+        header_len_bytes,
+        columns,
+        serial_types,
+    })
+}
+
 fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
     let offset: usize = if page_num == 1 { 100 } else { 0 };
     let page_header = parse_page_header(&page, page_num, offset)?;
@@ -535,6 +698,26 @@ fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
             ))?,
         };
         println!("parsed_cell {} at {}: {:?}\n", i, cell_pointer, parsed_cell);
+        match parsed_cell {
+            Cell::InteriorIndex {
+                left_child_page,
+                key,
+            } => todo!(),
+            Cell::InteriorTable {
+                left_child_page,
+                key,
+            } => todo!(),
+            Cell::LeafIndex { key } => todo!(),
+            Cell::LeafTable {
+                payload_varint_size,
+                rowid_varint_size,
+                rowid,
+                payload,
+            } => {
+                let parsed_payload = parse_payload(&payload)?;
+                println!("parsed_payload={:?}", parsed_payload);
+            }
+        }
     }
 
     Ok(())
