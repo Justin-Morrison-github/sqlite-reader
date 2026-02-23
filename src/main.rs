@@ -672,6 +672,81 @@ fn parse_payload(payload: &[u8]) -> Result<CellPayload, io::Error> {
     })
 }
 
+#[derive(Debug)]
+pub struct SchemaTable {
+    pub _type: SqliteValue,
+    pub name: SqliteValue,
+    pub tbl_name: SqliteValue,
+    pub rootpage: SqliteValue,
+    pub sql: SqliteValue,
+}
+
+fn extract_schema_table(columns: &[SqliteValue]) -> Result<SchemaTable, io::Error> {
+    dbg!(columns);
+    Ok(SchemaTable {
+        _type: columns[0].clone(),
+        name: columns[1].clone(),
+        tbl_name: columns[2].clone(),
+        rootpage: columns[3].clone(),
+        sql: columns[4].clone(),
+    })
+}
+
+fn parse_master_schema_page(page: &[u8], page_num: u32) -> Result<Vec<SchemaTable>, io::Error> {
+    let mut tables: Vec<SchemaTable> = Vec::new();
+    let offset: usize = if page_num == 1 { 100 } else { 0 };
+    let page_header = parse_page_header(&page, page_num, offset)?;
+    println!("page_header={:?}", page_header);
+
+    let base = offset + page_header.size;
+
+    const CELL_SIZE: usize = 2;
+    for i in 0..page_header.num_cells_on_page {
+        let ptr_offset = base + (i as usize) * CELL_SIZE;
+        let cell_pointer = read_u16_from_page(&page, ptr_offset).unwrap();
+        let cell = &page[(cell_pointer as usize)..];
+
+        let parsed_cell = match page_header.page_type {
+            PageType::InteriorIndex => parse_interior_index_cell(page, page_num)?,
+            PageType::InteriorTable => parse_interior_table_cell(page, page_num)?,
+            PageType::LeafIndex => parse_leaf_index_cell(page, page_num)?,
+            PageType::LeafTable => parse_leaf_table_cell(cell)?,
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Invalid Page Type -- Page {} type: {:?}",
+                    page_num, page_header.page_type
+                ),
+            ))?,
+        };
+        println!("\nparsed_cell {} at {}: {:?}", i, cell_pointer, parsed_cell);
+        match parsed_cell {
+            Cell::InteriorIndex {
+                left_child_page,
+                key,
+            } => todo!(),
+            Cell::InteriorTable {
+                left_child_page,
+                key,
+            } => todo!(),
+            Cell::LeafIndex { key } => todo!(),
+            Cell::LeafTable {
+                // payload_varint_size,
+                // rowid_varint_size,
+                rowid,
+                payload,
+            } => {
+                let parsed_payload = parse_payload(&payload)?;
+                println!("parsed_payload={:?}", parsed_payload);
+                let schema_table = extract_schema_table(&parsed_payload.columns)?;
+                dbg!(&schema_table);
+                tables.push(schema_table);
+            }
+        }
+    }
+
+    Ok(tables)
+}
 fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
     let offset: usize = if page_num == 1 { 100 } else { 0 };
     let page_header = parse_page_header(&page, page_num, offset)?;
@@ -698,7 +773,7 @@ fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
                 ),
             ))?,
         };
-        println!("parsed_cell {} at {}: {:?}\n", i, cell_pointer, parsed_cell);
+        println!("\nparsed_cell {} at {}: {:?}", i, cell_pointer, parsed_cell);
         match parsed_cell {
             Cell::InteriorIndex {
                 left_child_page,
@@ -710,13 +785,14 @@ fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
             } => todo!(),
             Cell::LeafIndex { key } => todo!(),
             Cell::LeafTable {
-                payload_varint_size,
-                rowid_varint_size,
+                // payload_varint_size,
+                // rowid_varint_size,
                 rowid,
                 payload,
             } => {
                 let parsed_payload = parse_payload(&payload)?;
                 println!("parsed_payload={:?}", parsed_payload);
+                dbg!(parsed_payload.columns);
             }
         }
     }
