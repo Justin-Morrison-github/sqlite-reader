@@ -1,6 +1,3 @@
-mod cli;
-use clap::Parser;
-use cli::Args;
 use core::fmt;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -891,8 +888,7 @@ fn extract_table_names(tables: &Vec<SchemaTable>) -> Result<Vec<&str>, io::Error
 }
 
 fn main() -> io::Result<()> {
-    let args = Args::parse();
-    let mut path = PathBuf::from(&args.file);
+    let mut path = PathBuf::from("test.db");
 
     if path.extension().is_none() {
         path.set_extension("db");
