@@ -566,7 +566,7 @@ struct CellPayload {
     columns: Vec<SqliteValue>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum SqliteValue {
     Null,
     Integer(i64),
@@ -800,6 +800,96 @@ fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
     Ok(())
 }
 
+use crossterm::{
+    event::{self, Event, KeyCode},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+
+use crossterm::{
+    cursor, execute,
+    style::{Attribute, SetAttribute},
+    terminal::{self, ClearType},
+};
+use std::io::{Write, stdout};
+fn draw_menu(items: &[&str], app_state: AppState) -> io::Result<()> {
+    let mut out = stdout();
+
+    execute!(out, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
+
+    for (i, item) in items.iter().enumerate() {
+        execute!(out, cursor::MoveTo(0, i as u16))?;
+        // write!(out, "{}", item)?;
+        if i == app_state.selected_table {
+            execute!(out, SetAttribute(Attribute::Reverse))?;
+            write!(out, "> {}", item)?;
+            execute!(out, SetAttribute(Attribute::Reset))?;
+        } else {
+            write!(out, "  {}", item)?;
+        }
+    }
+
+    write!(out, "\n{:?}", app_state)?;
+
+    out.flush()?;
+    Ok(())
+}
+use prettytable::{Table, cell, row};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Mode {
+    TableSelect,
+    RowSelect,
+}
+#[derive(Debug, Copy, Clone)]
+
+pub struct AppState {
+    mode: Mode,
+    selected_table: usize,
+    selected_row: usize,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        AppState {
+            mode: Mode::TableSelect,
+            selected_table: 0,
+            selected_row: 0,
+        }
+    }
+}
+
+fn wait_for_key() -> io::Result<()> {
+    println!("Press any key to continue…");
+
+    loop {
+        // poll blocks until an event occurs
+        let event = event::read()?;
+
+        if let Event::Key(_) = event {
+            break; // exit on any key press
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_table_names(tables: &Vec<SchemaTable>) -> Result<Vec<&str>, io::Error> {
+    let mut table_names: Vec<&str> = tables
+        .iter()
+        .filter_map(|t| {
+            if let SqliteValue::Text(s) = &t.name {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    table_names.push("Quit");
+    println!("{:?}", table_names); // ["users", "orders"]
+
+    Ok(table_names)
+}
+
 fn main() -> io::Result<()> {
     let args = Args::parse();
     let mut path = PathBuf::from(&args.file);
@@ -810,13 +900,72 @@ fn main() -> io::Result<()> {
     let mut file = File::open(path)?;
 
     let header = read_header(&mut file)?;
-    println!("Valid SQLite \n{}", header);
+    let master_schema_page = read_page(&mut file, header.page_size, 1)?;
+    let tables = parse_master_schema_page(&master_schema_page, 1)?;
+    let table_names = extract_table_names(&tables)?;
+    wait_for_key()?;
+    // for 1 in 1..=header.size_in_pages {
+    //     let page = read_page(&mut file, header.page_size, i)?;
+    //     parse_page(&page, i)?;
+    // }
+    enable_raw_mode()?; // important
+    execute!(stdout(), cursor::Hide, terminal::EnterAlternateScreen)?;
+    // let items = ["Users", "Orders", "Settings", "Quit"];
+    let mut app_state = AppState::new();
 
-    let page1 = read_page(&mut file, header.page_size, 1)?;
-    // println!("{:?}", page1);
+    loop {
+        draw_menu(&table_names, app_state)?;
 
-    parse_page(&page1, 1)?;
-    // println!("{:?}", parsed);
+        if let Event::Key(key) = event::read()? {
+            match key.code {
+                KeyCode::Up => match app_state.mode {
+                    Mode::TableSelect => {
+                        app_state.selected_table = app_state.selected_table.saturating_sub(1)
+                    }
+                    Mode::RowSelect => {
+                        app_state.selected_row = app_state.selected_row.saturating_sub(1)
+                    }
+                },
+                KeyCode::Down => match app_state.mode {
+                    Mode::TableSelect => {
+                        if app_state.selected_table < table_names.len() - 1 {
+                            app_state.selected_table += 1
+                        }
+                    }
+                    Mode::RowSelect => {
+                        if app_state.selected_row < table_names.len() - 1 {
+                            app_state.selected_row += 1
+                        }
+                    }
+                },
+
+                KeyCode::Enter => match app_state.mode {
+                    Mode::TableSelect => app_state.mode = Mode::RowSelect,
+                    Mode::RowSelect => continue,
+                },
+                KeyCode::Esc => break,
+                KeyCode::Left => match app_state.mode {
+                    Mode::TableSelect => continue,
+                    Mode::RowSelect => app_state.mode = Mode::TableSelect,
+                },
+                KeyCode::Right => match app_state.mode {
+                    Mode::TableSelect => app_state.mode = Mode::RowSelect,
+                    Mode::RowSelect => continue,
+                },
+                _ => {}
+            }
+        }
+    }
+
+    disable_raw_mode()?;
+    execute!(stdout(), cursor::Show, terminal::LeaveAlternateScreen)?;
+    // let mut table = Table::new();
+
+    // table.add_row(row!["ID", "Name"]);
+    // table.add_row(row!["1", "Alice"]);
+    // table.add_row(row!["2", "Bob"]);
+
+    // table.printstd();
 
     Ok(())
 }
