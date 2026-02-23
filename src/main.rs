@@ -1,4 +1,5 @@
 use core::fmt;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -669,8 +670,8 @@ fn parse_payload(payload: &[u8]) -> Result<CellPayload, io::Error> {
     })
 }
 
-#[derive(Debug)]
-pub struct SchemaTable {
+#[derive(Debug, Clone)]
+struct SchemaTable {
     pub _type: SqliteValue,
     pub name: SqliteValue,
     pub tbl_name: SqliteValue,
@@ -679,7 +680,6 @@ pub struct SchemaTable {
 }
 
 fn extract_schema_table(columns: &[SqliteValue]) -> Result<SchemaTable, io::Error> {
-    dbg!(columns);
     Ok(SchemaTable {
         _type: columns[0].clone(),
         name: columns[1].clone(),
@@ -689,11 +689,30 @@ fn extract_schema_table(columns: &[SqliteValue]) -> Result<SchemaTable, io::Erro
     })
 }
 
-fn parse_master_schema_page(page: &[u8], page_num: u32) -> Result<Vec<SchemaTable>, io::Error> {
-    let mut tables: Vec<SchemaTable> = Vec::new();
-    let offset: usize = if page_num == 1 { 100 } else { 0 };
+#[derive(Debug)]
+pub struct Schema {
+    _type: SqliteValue,
+    name: SqliteValue,
+    rootpage: SqliteValue,
+    rowid: u64,
+    columns: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub struct MasterSchemaPage {
+    map: HashMap<String, Schema>,
+    // schema_table: Vec<SchemaTable>,
+    // parsed_cells: Vec<Cell<'a>>,
+    // parsed_payloads: Vec<CellPayload>,
+}
+
+fn parse_master_schema_page(page: &[u8], page_num: u32) -> Result<MasterSchemaPage, io::Error> {
+    let mut master_schema_page = MasterSchemaPage {
+        map: HashMap::new(),
+    };
+    let offset: usize = 100;
     let page_header = parse_page_header(&page, page_num, offset)?;
-    println!("page_header={:?}", page_header);
+    println!("master schema page_header={:?}", page_header);
 
     let base = offset + page_header.size;
 
@@ -734,16 +753,57 @@ fn parse_master_schema_page(page: &[u8], page_num: u32) -> Result<Vec<SchemaTabl
                 payload,
             } => {
                 let parsed_payload = parse_payload(&payload)?;
-                println!("parsed_payload={:?}", parsed_payload);
                 let schema_table = extract_schema_table(&parsed_payload.columns)?;
-                dbg!(&schema_table);
-                tables.push(schema_table);
+                let columns = extract_table_columns(&parsed_payload.columns[4])?;
+
+                let schema = Schema {
+                    _type: schema_table._type.clone(),
+                    name: schema_table.name.clone(),
+                    rootpage: schema_table.rootpage,
+                    rowid,
+                    columns,
+                };
+                if let SqliteValue::Text(name) = schema_table.name {
+                    master_schema_page.map.insert(name, schema);
+                }
             }
         }
     }
 
-    Ok(tables)
+    Ok(master_schema_page)
 }
+
+fn extract_table_columns(sql_text: &SqliteValue) -> Result<HashMap<String, String>, io::Error> {
+    let mut map: HashMap<String, String> = HashMap::new();
+
+    if let SqliteValue::Text(s) = sql_text {
+        // Find the part inside the parentheses
+        if let Some(start) = s.find('(') {
+            if let Some(end) = s.rfind(')') {
+                let cols = &s[start + 1..end]; // slice inside ()
+                // Split by comma, handle each column definition
+                for col_def in cols.split(',') {
+                    let col_def = col_def.trim();
+                    if col_def.is_empty() {
+                        continue;
+                    }
+                    // Split by whitespace
+                    let mut parts = col_def.split_whitespace();
+                    if let Some(name) = parts.next() {
+                        if let Some(col_type) = parts.next() {
+                            map.insert(name.to_string(), col_type.to_string());
+                        } else {
+                            map.insert(name.to_string(), "".to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(map)
+}
+
 fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
     let offset: usize = if page_num == 1 { 100 } else { 0 };
     let page_header = parse_page_header(&page, page_num, offset)?;
@@ -808,51 +868,61 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 use std::io::{Write, stdout};
-fn draw_menu(items: &[&str], app_state: AppState) -> io::Result<()> {
+fn draw_menu(app_state: &AppState) -> io::Result<()> {
     let mut out = stdout();
 
     execute!(out, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
 
-    for (i, item) in items.iter().enumerate() {
-        execute!(out, cursor::MoveTo(0, i as u16))?;
-        // write!(out, "{}", item)?;
-        if i == app_state.selected_table {
-            execute!(out, SetAttribute(Attribute::Reverse))?;
-            write!(out, "> {}", item)?;
-            execute!(out, SetAttribute(Attribute::Reset))?;
-        } else {
-            write!(out, "  {}", item)?;
+    match app_state.mode {
+        Mode::TableSelect => {
+            for (i, item) in app_state.table_names.iter().enumerate() {
+                execute!(out, cursor::MoveTo(0, i as u16))?;
+                if i == app_state.selected_table {
+                    execute!(out, SetAttribute(Attribute::Reverse))?;
+                    write!(out, "> {}", item)?;
+                    execute!(out, SetAttribute(Attribute::Reset))?;
+                } else {
+                    write!(out, "  {}", item)?;
+                }
+            }
+
+            write!(out, "\n{:?}", app_state)?;
+        }
+        Mode::RowSelect => {
+            let items = ["1", "2", "3"];
+            for (i, item) in items.iter().enumerate() {
+                execute!(out, cursor::MoveTo(0, i as u16))?;
+                if i == app_state.selected_row {
+                    execute!(out, SetAttribute(Attribute::Reverse))?;
+                    write!(out, "> {}", item)?;
+                    execute!(out, SetAttribute(Attribute::Reset))?;
+                } else {
+                    write!(out, "  {}", item)?;
+                }
+            }
+
+            write!(out, "\n{:?}", app_state)?;
         }
     }
-
-    write!(out, "\n{:?}", app_state)?;
 
     out.flush()?;
     Ok(())
 }
-use prettytable::{Table, cell, row};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mode {
     TableSelect,
     RowSelect,
 }
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 
 pub struct AppState {
     mode: Mode,
     selected_table: usize,
     selected_row: usize,
-}
-
-impl AppState {
-    pub fn new() -> Self {
-        AppState {
-            mode: Mode::TableSelect,
-            selected_table: 0,
-            selected_row: 0,
-        }
-    }
+    // tables: Vec<SchemaTable>,
+    table_names: Vec<String>,
+    // table_column_map: HashMap<String, String>,
 }
 
 fn wait_for_key() -> io::Result<()> {
@@ -870,21 +940,61 @@ fn wait_for_key() -> io::Result<()> {
     Ok(())
 }
 
-fn extract_table_names(tables: &Vec<SchemaTable>) -> Result<Vec<&str>, io::Error> {
-    let mut table_names: Vec<&str> = tables
+fn extract_table_names(master_schema_page: &MasterSchemaPage) -> Result<Vec<String>, io::Error> {
+    let mut table_names: Vec<String> = master_schema_page
+        .map
         .iter()
-        .filter_map(|t| {
-            if let SqliteValue::Text(s) = &t.name {
-                Some(s.as_str())
-            } else {
-                None
-            }
-        })
+        .map(|(key, _)| key.clone()) // just clone the string
         .collect();
-    table_names.push("Quit");
-    println!("{:?}", table_names); // ["users", "orders"]
-
+    table_names.push("Quit".to_string());
     Ok(table_names)
+}
+
+fn handle_key(app_state: &mut AppState, key: KeyCode) -> bool {
+    match key {
+        KeyCode::Up => match app_state.mode {
+            Mode::TableSelect => {
+                app_state.selected_table = app_state.selected_table.saturating_sub(1);
+            }
+            Mode::RowSelect => {
+                app_state.selected_row = app_state.selected_row.saturating_sub(1);
+            }
+        },
+        KeyCode::Down => match app_state.mode {
+            Mode::TableSelect => {
+                if app_state.selected_table < app_state.table_names.len() - 1 {
+                    app_state.selected_table += 1;
+                }
+            }
+            Mode::RowSelect => {
+                if app_state.selected_row < app_state.table_names.len() - 1 {
+                    app_state.selected_row += 1;
+                }
+            }
+        },
+        KeyCode::Enter => match app_state.mode {
+            Mode::TableSelect => {
+                if app_state.selected_table == app_state.table_names.len() - 1 {
+                    return true; // signal quit
+                }
+                app_state.mode = Mode::RowSelect;
+            }
+            Mode::RowSelect => {}
+        },
+
+        KeyCode::Left => match &app_state.mode {
+            Mode::TableSelect => {}
+            Mode::RowSelect => app_state.mode = Mode::TableSelect,
+        },
+        KeyCode::Right => match app_state.mode {
+            Mode::TableSelect => app_state.mode = Mode::RowSelect,
+            Mode::RowSelect => {}
+        },
+        // signal quit
+        KeyCode::Esc => return true,
+        _ => {}
+    }
+    false
 }
 
 fn main() -> io::Result<()> {
@@ -897,64 +1007,38 @@ fn main() -> io::Result<()> {
 
     let header = read_header(&mut file)?;
     let master_schema_page = read_page(&mut file, header.page_size, 1)?;
-    let tables = parse_master_schema_page(&master_schema_page, 1)?;
-    let table_names = extract_table_names(&tables)?;
+
+    let master_schema_page = parse_master_schema_page(&master_schema_page, 1)?;
+    let mut app_state = AppState {
+        mode: Mode::TableSelect,
+        selected_table: 0,
+        selected_row: 0,
+        table_names: extract_table_names(&master_schema_page)?,
+    };
+    dbg!(master_schema_page);
+
     wait_for_key()?;
-    // for 1 in 1..=header.size_in_pages {
-    //     let page = read_page(&mut file, header.page_size, i)?;
-    //     parse_page(&page, i)?;
-    // }
+
+    for i in 2..=header.size_in_pages {
+        let page = read_page(&mut file, header.page_size, i)?;
+        parse_page(&page, i)?;
+    }
     enable_raw_mode()?; // important
     execute!(stdout(), cursor::Hide, terminal::EnterAlternateScreen)?;
-    // let items = ["Users", "Orders", "Settings", "Quit"];
-    let mut app_state = AppState::new();
 
     loop {
-        draw_menu(&table_names, app_state)?;
+        draw_menu(&app_state)?;
 
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Up => match app_state.mode {
-                    Mode::TableSelect => {
-                        app_state.selected_table = app_state.selected_table.saturating_sub(1)
-                    }
-                    Mode::RowSelect => {
-                        app_state.selected_row = app_state.selected_row.saturating_sub(1)
-                    }
-                },
-                KeyCode::Down => match app_state.mode {
-                    Mode::TableSelect => {
-                        if app_state.selected_table < table_names.len() - 1 {
-                            app_state.selected_table += 1
-                        }
-                    }
-                    Mode::RowSelect => {
-                        if app_state.selected_row < table_names.len() - 1 {
-                            app_state.selected_row += 1
-                        }
-                    }
-                },
-
-                KeyCode::Enter => match app_state.mode {
-                    Mode::TableSelect => app_state.mode = Mode::RowSelect,
-                    Mode::RowSelect => continue,
-                },
-                KeyCode::Esc => break,
-                KeyCode::Left => match app_state.mode {
-                    Mode::TableSelect => continue,
-                    Mode::RowSelect => app_state.mode = Mode::TableSelect,
-                },
-                KeyCode::Right => match app_state.mode {
-                    Mode::TableSelect => app_state.mode = Mode::RowSelect,
-                    Mode::RowSelect => continue,
-                },
-                _ => {}
+        if let Event::Key(event) = event::read()? {
+            if handle_key(&mut app_state, event.code) {
+                break;
             }
         }
     }
 
     disable_raw_mode()?;
     execute!(stdout(), cursor::Show, terminal::LeaveAlternateScreen)?;
+    // use prettytable::{Table, cell, row};
     // let mut table = Table::new();
 
     // table.add_row(row!["ID", "Name"]);
