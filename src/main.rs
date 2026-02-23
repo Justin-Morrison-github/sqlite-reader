@@ -134,22 +134,22 @@ fn is_valid_page_size(page_size: u16) -> bool {
 }
 
 fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
-    let magic_bytes = read_magic(file)?;
+    let _magic_bytes = read_magic(file)?;
     let page_size = read_page_size(file)?;
 
-    let format_write_version = read_u8(file)?;
-    let format_read_version = read_u8(file)?;
+    let _format_write_version = read_u8(file)?;
+    let _format_read_version = read_u8(file)?;
 
     let reseved_space = read_u8(file)?;
-    let max_payload_frac = read_max_payload_frac(file)?;
-    let min_payload_frac = read_min_payload_frac(file)?;
-    let leaf_payload_frac = read_leaf_payload_frac(file)?;
+    let _max_payload_frac = read_max_payload_frac(file)?;
+    let _min_payload_frac = read_min_payload_frac(file)?;
+    let _leaf_payload_frac = read_leaf_payload_frac(file)?;
 
     let file_change_count = read_u32(file)?;
     let size_in_pages = read_u32(file)?;
-    let first_freelist_trunk_page_num = read_u32(file)?;
-    let num_freelist_pages = read_u32(file)?;
-    let schema_cookie = read_u32(file)?;
+    let _first_freelist_trunk_page_num = read_u32(file)?;
+    let _num_freelist_pages = read_u32(file)?;
+    let _schema_cookie = read_u32(file)?;
 
     let schema_format = read_u32(file)?;
     if schema_format > 4 {
@@ -159,7 +159,7 @@ fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
         ));
     }
 
-    let suggested_cache_size = read_u32(file)?;
+    let _suggested_cache_size = read_u32(file)?;
 
     let largest_b_tree_root_page_num = read_u32(file)?;
 
@@ -167,10 +167,10 @@ fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
     let text_encoding = DBTextEncoding::try_from(text_encoding_u32)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let user_version = read_u32(file)?;
+    let _user_version = read_u32(file)?;
 
     let incremental_vacuum_enabled_u32 = read_u32(file)?;
-    let incremental_vacuum_enabled = incremental_vacuum_enabled_u32 != 0;
+    let _incremental_vacuum_enabled = incremental_vacuum_enabled_u32 != 0;
 
     // If the integer at offset 52 is zero then the integer at offset 64 must also be zero.
     if largest_b_tree_root_page_num == 0 && incremental_vacuum_enabled_u32 != 0 {
@@ -183,7 +183,7 @@ fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
         ));
     }
 
-    let application_id = read_u32(file)?;
+    let _application_id = read_u32(file)?;
 
     // Account for reserved
     let mut reserved = [0u8; 20];
@@ -195,18 +195,19 @@ fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
         ));
     }
 
-    let valid_for_num = read_u32(file)?;
+    let _valid_for_num = read_u32(file)?;
 
     // file.seek(SeekFrom::Start(96))?;
     let sqlite_version_num = read_u32(file)?;
     if sqlite_version_num == 0 {
         println!("SQLite version number not set or invalid");
-    } else {
-        let major = sqlite_version_num / 1_000_000;
-        let minor = (sqlite_version_num / 1_000) % 1000;
-        let patch = sqlite_version_num % 1000;
-        println!("SQLite version: {}.{}.{}", major, minor, patch);
     }
+    // else {
+    //     let major = sqlite_version_num / 1_000_000;
+    //     let minor = (sqlite_version_num / 1_000) % 1000;
+    //     let patch = sqlite_version_num % 1000;
+    //     // println!("SQLite version: {}.{}.{}", major, minor, patch);
+    // }
 
     let usable_page_size = page_size - reseved_space as u16;
     if usable_page_size < 480 {
@@ -349,8 +350,8 @@ fn parse_leaf_table_cell(cell: &[u8]) -> Result<Cell<'_>, io::Error> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "cell payload truncated"))?;
 
     Ok(Cell::LeafTable {
-        payload_varint_size,
-        rowid_varint_size,
+        // payload_varint_size,
+        // rowid_varint_size,
         rowid,
         payload,
     })
@@ -501,8 +502,8 @@ pub enum Cell<'a> {
         key: Vec<u8>,
     },
     LeafTable {
-        payload_varint_size: usize,
-        rowid_varint_size: usize,
+        // payload_varint_size: usize,
+        // rowid_varint_size: usize,
         rowid: u64,
         payload: &'a [u8],
     },
