@@ -867,6 +867,64 @@ use crossterm::{
     style::{Attribute, SetAttribute},
     terminal::{self, ClearType},
 };
+
+fn draw_table(
+    out: &mut impl std::io::Write,
+    headers: &[String],
+    rows: &[Vec<String>],
+    app_state: &AppState,
+) -> std::io::Result<()> {
+    // compute column widths
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+
+    // header
+    write!(out, "  |")?; // left margin
+
+    for (i, h) in headers.iter().enumerate() {
+        write!(
+            out,
+            " {:width$} |",
+            h.to_ascii_uppercase(),
+            width = widths[i]
+        )?;
+    }
+    writeln!(out)?;
+    execute!(out, cursor::MoveTo(0, 1 as u16))?;
+
+    // separator
+    write!(out, "  |")?;
+    for (i, w) in widths.iter().enumerate() {
+        if i == 0 {}
+        write!(out, " {} |", "-".repeat(*w))?;
+    }
+    writeln!(out)?;
+
+    // rows
+    for (i, row) in rows.iter().enumerate() {
+        execute!(out, cursor::MoveTo(0, (i + 2) as u16))?;
+        if i == app_state.selected_row {
+            write!(out, "> ")?;
+        } else {
+            write!(out, "  ")?;
+        }
+        write!(out, "|")?;
+        for (j, cell) in row.iter().enumerate() {
+            // write!(out, " {} ", "-".repeat(*w))?;
+            write!(out, " {:width$} ", cell, width = widths[j])?;
+            write!(out, "|")?;
+        }
+        writeln!(out)?;
+    }
+
+    Ok(())
+}
+
 use std::io::{Write, stdout};
 fn draw_menu(app_state: &AppState) -> io::Result<()> {
     let mut out = stdout();
@@ -875,30 +933,33 @@ fn draw_menu(app_state: &AppState) -> io::Result<()> {
 
     match app_state.mode {
         Mode::TableSelect => {
-            for (i, item) in app_state.table_names.iter().enumerate() {
-                execute!(out, cursor::MoveTo(0, i as u16))?;
-                if i == app_state.selected_table {
+            for table in app_state.items.iter() {
+                execute!(out, cursor::MoveTo(0, table.index as u16))?;
+                if table.index == app_state.selected_table_idx {
                     execute!(out, SetAttribute(Attribute::Reverse))?;
-                    write!(out, "> {}", item)?;
+                    write!(out, "> {}", table.name)?;
                     execute!(out, SetAttribute(Attribute::Reset))?;
                 } else {
-                    write!(out, "  {}", item)?;
+                    write!(out, "  {}", table.name)?;
                 }
             }
 
             write!(out, "\n{:?}", app_state)?;
         }
         Mode::RowSelect => {
-            let items = ["1", "2", "3"];
-            for (i, item) in items.iter().enumerate() {
-                execute!(out, cursor::MoveTo(0, i as u16))?;
-                if i == app_state.selected_row {
-                    execute!(out, SetAttribute(Attribute::Reverse))?;
-                    write!(out, "> {}", item)?;
-                    execute!(out, SetAttribute(Attribute::Reset))?;
-                } else {
-                    write!(out, "  {}", item)?;
+            match &app_state.active_table {
+                Some(table_map) => {
+                    let headers: Vec<String> =
+                        table_map.iter().map(|(key, _)| key.to_string()).collect();
+
+                    let rows: [Vec<String>; 2] = [
+                        vec!["David".to_string(), "1".to_string()],
+                        vec!["Elise".to_string(), "2".to_string()],
+                    ];
+
+                    draw_table(&mut out, &headers, &rows, &app_state)?;
                 }
+                None => todo!(),
             }
 
             write!(out, "\n{:?}", app_state)?;
@@ -918,11 +979,25 @@ enum Mode {
 
 pub struct AppState {
     mode: Mode,
-    selected_table: usize,
+    selected_table_idx: usize,
     selected_row: usize,
     // tables: Vec<SchemaTable>,
-    table_names: Vec<String>,
+    items: Vec<TableUISelect>,
     // table_column_map: HashMap<String, String>,
+    active_table: Option<HashMap<String, String>>,
+    // index_to_rowid: HashMap<usize, usize>,
+    map: HashMap<u64, HashMap<String, String>>,
+}
+
+impl AppState {
+    pub fn get_active_rowid(&self) -> Option<u64> {
+        self.items.get(self.selected_table_idx).map(|s| s.rowid)
+    }
+
+    pub fn get_active_table(&self) -> Option<HashMap<String, String>> {
+        self.get_active_rowid()
+            .and_then(|rowid| self.map.get(&rowid).cloned())
+    }
 }
 
 fn wait_for_key() -> io::Result<()> {
@@ -940,21 +1015,45 @@ fn wait_for_key() -> io::Result<()> {
     Ok(())
 }
 
-fn extract_table_names(master_schema_page: &MasterSchemaPage) -> Result<Vec<String>, io::Error> {
-    let mut table_names: Vec<String> = master_schema_page
-        .map
-        .iter()
-        .map(|(key, _)| key.clone()) // just clone the string
-        .collect();
-    table_names.push("Quit".to_string());
-    Ok(table_names)
+#[derive(Debug, Clone)]
+pub struct TableUISelect {
+    name: String,
+    index: usize,
+    rowid: u64,
+}
+
+fn extract_table_name_rowid_map(
+    master_schema_page: &MasterSchemaPage,
+) -> Result<Vec<TableUISelect>, io::Error> {
+    let mut items: Vec<TableUISelect> = Vec::new();
+    for (index, (name, schema)) in master_schema_page.map.iter().enumerate() {
+        items.insert(
+            index,
+            TableUISelect {
+                name: name.to_string(),
+                index,
+                rowid: schema.rowid,
+            },
+        );
+    }
+    Ok(items)
+}
+
+fn extract_table_map(
+    master_schema_page: &MasterSchemaPage,
+) -> Result<HashMap<u64, HashMap<String, String>>, io::Error> {
+    let mut items: HashMap<u64, HashMap<String, String>> = HashMap::new();
+    for (_, schema) in &master_schema_page.map {
+        items.insert(schema.rowid, schema.columns.clone());
+    }
+    Ok(items)
 }
 
 fn handle_key(app_state: &mut AppState, key: KeyCode) -> bool {
     match key {
         KeyCode::Up => match app_state.mode {
             Mode::TableSelect => {
-                app_state.selected_table = app_state.selected_table.saturating_sub(1);
+                app_state.selected_table_idx = app_state.selected_table_idx.saturating_sub(1);
             }
             Mode::RowSelect => {
                 app_state.selected_row = app_state.selected_row.saturating_sub(1);
@@ -962,19 +1061,21 @@ fn handle_key(app_state: &mut AppState, key: KeyCode) -> bool {
         },
         KeyCode::Down => match app_state.mode {
             Mode::TableSelect => {
-                if app_state.selected_table < app_state.table_names.len() - 1 {
-                    app_state.selected_table += 1;
+                if app_state.selected_table_idx + 1 < app_state.items.len() {
+                    app_state.selected_table_idx += 1;
                 }
             }
             Mode::RowSelect => {
-                if app_state.selected_row < app_state.table_names.len() - 1 {
+                if app_state.selected_row + 1 < app_state.items.len() {
                     app_state.selected_row += 1;
                 }
             }
         },
         KeyCode::Enter => match app_state.mode {
             Mode::TableSelect => {
-                if app_state.selected_table == app_state.table_names.len() - 1 {
+                if !app_state.items.is_empty()
+                    && app_state.selected_table_idx == app_state.items.len() - 1
+                {
                     return true; // signal quit
                 }
                 app_state.mode = Mode::RowSelect;
@@ -987,7 +1088,10 @@ fn handle_key(app_state: &mut AppState, key: KeyCode) -> bool {
             Mode::RowSelect => app_state.mode = Mode::TableSelect,
         },
         KeyCode::Right => match app_state.mode {
-            Mode::TableSelect => app_state.mode = Mode::RowSelect,
+            Mode::TableSelect => {
+                app_state.mode = Mode::RowSelect;
+                app_state.active_table = app_state.get_active_table()
+            }
             Mode::RowSelect => {}
         },
         // signal quit
@@ -1011,13 +1115,16 @@ fn main() -> io::Result<()> {
     let master_schema_page = parse_master_schema_page(&master_schema_page, 1)?;
     let mut app_state = AppState {
         mode: Mode::TableSelect,
-        selected_table: 0,
+        selected_table_idx: 0,
         selected_row: 0,
-        table_names: extract_table_names(&master_schema_page)?,
+        items: extract_table_name_rowid_map(&master_schema_page)?,
+        map: extract_table_map(&master_schema_page)?,
+        active_table: None,
     };
-    dbg!(master_schema_page);
+    // println!("app_state={:?}", app_state);
+    // dbg!(master_schema_page);
 
-    wait_for_key()?;
+    // wait_for_key()?;
 
     for i in 2..=header.size_in_pages {
         let page = read_page(&mut file, header.page_size, i)?;
@@ -1038,14 +1145,6 @@ fn main() -> io::Result<()> {
 
     disable_raw_mode()?;
     execute!(stdout(), cursor::Show, terminal::LeaveAlternateScreen)?;
-    // use prettytable::{Table, cell, row};
-    // let mut table = Table::new();
-
-    // table.add_row(row!["ID", "Name"]);
-    // table.add_row(row!["1", "Alice"]);
-    // table.add_row(row!["2", "Bob"]);
-
-    // table.printstd();
 
     Ok(())
 }
