@@ -1,4 +1,3 @@
-use core::fmt;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -8,84 +7,25 @@ const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 
 #[derive(Debug)]
 pub struct SqliteHeader {
-    // magic: [u8; 16],
     page_size: u16,
     // format_write_version: u8,
     // format_read_version: u8,
-    // reseved_space: u8,
-    // max_payload_frac: u8,
-    // min_payload_frac: u8,
-    // leaf_payload_frac: u8,
-    file_change_count: u32,
+    // reserved_space: u8,
+    // file_change_count: u32,
     size_in_pages: u32,
     // first_freelist_trunk_page_num: u32,
     // num_freelist_pages: u32,
     // schema_cookie: u32,
-    schema_format: u32,
+    // schema_format: u32,
     // suggested_cache_size: u32,
     // largest_b_tree_root_page_num: u32,
-    text_encoding: DBTextEncoding,
+    // text_encoding: DBTextEncoding,
     // user_version: u32,
     // incremental_vacuum_enabled: bool,
     // application_id: u32,
-    // reserved: [u8; 20],
     // valid_for_num: u32,
-    sqlite_version_num: u32,
-}
-
-impl fmt::Display for SqliteHeader {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // let magic = String::from_utf8_lossy(&self.magic);
-
-        writeln!(f, "SQLite Header {{")?;
-        // writeln!(f, "  magic:             {:?}", magic)?;
-        writeln!(f, "  page_size:               {}", self.page_size)?;
-        // writeln!(
-        //     f,
-        //     "  write_version:           {:?}",
-        //     self.format_write_version
-        // )?;
-        // writeln!(
-        //     f,
-        //     "  read_version:            {:?}",
-        //     self.format_read_version
-        // )?;
-        // writeln!(f, "  reserved_space:          {}", self.reseved_space)?;
-        // writeln!(f, "  max_payload_frac:        {}", self.max_payload_frac)?;
-        // writeln!(f, "  min_payload_frac:        {}", self.min_payload_frac)?;
-        // writeln!(f, "  leaf_payload_frac:       {}", self.leaf_payload_frac)?;
-        writeln!(f, "  file_change_count:       {}", self.file_change_count)?;
-        writeln!(f, "  size_in_pages:           {}", self.size_in_pages)?;
-        // writeln!(
-        //     f,
-        //     "  freelist_trunk_page:     {}",
-        //     self.first_freelist_trunk_page_num
-        // )?;
-        // writeln!(f, "  freelist_pages:          {}", self.num_freelist_pages)?;
-        // writeln!(f, "  schema_cookie:           {}", self.schema_cookie)?;
-        writeln!(f, "  schema_format:           {}", self.schema_format)?;
-        // writeln!(
-        //     f,
-        //     "  default_cache_size:      {}",
-        //     self.suggested_cache_size
-        // )?;
-        // writeln!(
-        //     f,
-        //     "  largest_root_page:       {}",
-        //     self.largest_b_tree_root_page_num
-        // )?;
-        writeln!(f, "  text_encoding:           {:?}", self.text_encoding)?;
-        // writeln!(f, "  user_version:            {}", self.user_version)?;
-        // writeln!(
-        //     f,
-        //     "  incremental_vacuum:      {}",
-        //     self.incremental_vacuum_enabled
-        // )?;
-        // writeln!(f, "  application_id:          {}", self.application_id)?;
-        // writeln!(f, "  valid_for:               {}", self.valid_for_num)?;
-        writeln!(f, "  sqlite_version:          {}", self.sqlite_version_num)?;
-        write!(f, "}}")
-    }
+    // sqlite_version_num: u32,
+    usable_page_size: u16,
 }
 
 #[derive(Debug)]
@@ -138,7 +78,7 @@ fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
     let _format_write_version = read_u8(file)?;
     let _format_read_version = read_u8(file)?;
 
-    let reseved_space = read_u8(file)?;
+    let reserved_space = read_u8(file)?;
     let _max_payload_frac = read_max_payload_frac(file)?;
     let _min_payload_frac = read_min_payload_frac(file)?;
     let _leaf_payload_frac = read_leaf_payload_frac(file)?;
@@ -207,7 +147,7 @@ fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
     //     // println!("SQLite version: {}.{}.{}", major, minor, patch);
     // }
 
-    let usable_page_size = page_size - reseved_space as u16;
+    let usable_page_size = page_size - reserved_space as u16;
     if usable_page_size < 480 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -219,28 +159,25 @@ fn read_header(file: &mut File) -> std::io::Result<SqliteHeader> {
     }
 
     Ok(SqliteHeader {
-        // magic: magic_bytes,
         page_size,
         // format_write_version,
         // format_read_version,
-        // reseved_space,
-        // max_payload_frac,
-        // min_payload_frac,
-        // leaf_payload_frac,
-        file_change_count,
+        // reserved_space,
+        // file_change_count,
         size_in_pages,
         // first_freelist_trunk_page_num,
         // num_freelist_pages,
         // schema_cookie,
-        schema_format,
+        // schema_format,
         // suggested_cache_size,
         // largest_b_tree_root_page_num,
-        text_encoding,
+        // text_encoding,
         // user_version,
         // incremental_vacuum_enabled,
         // application_id,
         // valid_for_num,
-        sqlite_version_num,
+        // sqlite_version_num,
+        usable_page_size,
     })
 }
 
@@ -307,8 +244,8 @@ fn read_page(file: &mut File, page_size: u16, page_num: u32) -> std::io::Result<
     Ok(buf)
 }
 
-fn parse_interior_index_cell(cell: &[u8], page_num: u32) -> Result<Cell<'_>, io::Error> {
-    println!("Parsing Interior Index Cell {}", page_num);
+fn parse_interior_index_cell(cell: &[u8]) -> Result<Cell<'_>, io::Error> {
+    println!("Parsing Interior Index Cell");
 
     Ok(Cell::InteriorIndex {
         left_child_page: 0,
@@ -316,17 +253,35 @@ fn parse_interior_index_cell(cell: &[u8], page_num: u32) -> Result<Cell<'_>, io:
     })
 }
 
-fn parse_interior_table_cell(cell: &[u8], page_num: u32) -> Result<Cell<'_>, io::Error> {
-    println!("Parsing Interior Table Cell {}", page_num);
+fn parse_interior_table_cell(cell: &[u8]) -> Result<Cell<'_>, io::Error> {
+    println!("Parsing Interior Table Cell");
     Ok(Cell::InteriorTable {
         left_child_page: 0,
         key: 0,
     })
 }
 
-fn parse_leaf_index_cell(cell: &[u8], page_num: u32) -> Result<Cell<'_>, io::Error> {
-    println!("Parsing Leaf Cell {}", page_num);
-    Ok(Cell::LeafIndex { key: vec![0] })
+fn parse_leaf_index_cell(cell: &[u8], usable_size: u16) -> Result<Cell<'_>, io::Error> {
+    let (payload_len, varint_size) = read_varint(&cell, 0);
+    let offset = varint_size;
+    let payload_len = payload_len as usize;
+
+    let payload = cell
+        .get(offset..offset + payload_len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "cell payload truncated"))?;
+
+    let max_local = (usable_size as usize) - 35;
+
+    let first_overflow_page = if payload_len > max_local {
+        Some(read_u32_from_page(cell, offset + payload_len)?)
+    } else {
+        None
+    };
+
+    Ok(Cell::LeafIndex {
+        payload,
+        first_overflow_page,
+    })
 }
 
 // // cell may contain more bytes than needed
@@ -497,11 +452,10 @@ pub enum Cell<'a> {
         key: u64,
     },
     LeafIndex {
-        key: Vec<u8>,
+        payload: &'a [u8],
+        first_overflow_page: Option<u32>,
     },
     LeafTable {
-        // payload_varint_size: usize,
-        // rowid_varint_size: usize,
         rowid: u64,
         payload: &'a [u8],
     },
@@ -558,9 +512,7 @@ impl TryFrom<u64> for SerialType {
 
 #[derive(Debug)]
 struct CellPayload {
-    header_length: u64,
-    header_len_bytes: usize,
-    serial_types: Vec<SerialType>,
+    // serial_types: Vec<SerialType>,
     columns: Vec<SqliteValue>,
 }
 
@@ -663,10 +615,8 @@ fn parse_payload(payload: &[u8]) -> Result<CellPayload, io::Error> {
     }
     let columns = decode_payload_values(&payload, &serial_types, header_length as usize)?;
     Ok(CellPayload {
-        header_length,
-        header_len_bytes,
         columns,
-        serial_types,
+        // serial_types,
     })
 }
 
@@ -704,11 +654,17 @@ pub struct MasterSchemaPage {
     // schema_table: Vec<SchemaTable>,
     // parsed_cells: Vec<Cell<'a>>,
     // parsed_payloads: Vec<CellPayload>,
+    b_tree_pages: Vec<u32>,
 }
 
-fn parse_master_schema_page(page: &[u8], page_num: u32) -> Result<MasterSchemaPage, io::Error> {
+fn parse_master_schema_page(
+    page: &[u8],
+    page_num: u32,
+    usable_page_size: u16,
+) -> Result<MasterSchemaPage, io::Error> {
     let mut master_schema_page = MasterSchemaPage {
         map: HashMap::new(),
+        b_tree_pages: Vec::new(),
     };
     let offset: usize = 100;
     let page_header = parse_page_header(&page, page_num, offset)?;
@@ -722,52 +678,58 @@ fn parse_master_schema_page(page: &[u8], page_num: u32) -> Result<MasterSchemaPa
         let cell_pointer = read_u16_from_page(&page, ptr_offset).unwrap();
         let cell = &page[(cell_pointer as usize)..];
 
-        let parsed_cell = match page_header.page_type {
-            PageType::InteriorIndex => parse_interior_index_cell(page, page_num)?,
-            PageType::InteriorTable => parse_interior_table_cell(page, page_num)?,
-            PageType::LeafIndex => parse_leaf_index_cell(page, page_num)?,
-            PageType::LeafTable => parse_leaf_table_cell(cell)?,
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Invalid Page Type -- Page {} type: {:?}",
-                    page_num, page_header.page_type
-                ),
-            ))?,
-        };
-        println!("\nparsed_cell {} at {}: {:?}", i, cell_pointer, parsed_cell);
-        match parsed_cell {
-            Cell::InteriorIndex {
-                left_child_page,
-                key,
-            } => todo!(),
-            Cell::InteriorTable {
-                left_child_page,
-                key,
-            } => todo!(),
-            Cell::LeafIndex { key } => todo!(),
-            Cell::LeafTable {
-                // payload_varint_size,
-                // rowid_varint_size,
-                rowid,
-                payload,
-            } => {
-                let parsed_payload = parse_payload(&payload)?;
-                let schema_table = extract_schema_table(&parsed_payload.columns)?;
-                let columns = extract_table_columns(&parsed_payload.columns[4])?;
+        match page_header.page_type {
+            PageType::InteriorIndex => {
+                println!("InteriorIndex");
+                parse_interior_index_cell(cell)?;
+                todo!()
+            }
+            PageType::InteriorTable => {
+                println!("InteriorTable");
+                parse_interior_table_cell(cell)?;
 
-                let schema = Schema {
-                    _type: schema_table._type.clone(),
-                    name: schema_table.name.clone(),
-                    rootpage: schema_table.rootpage,
-                    rowid,
-                    columns,
-                };
-                if let SqliteValue::Text(name) = schema_table.name {
-                    master_schema_page.map.insert(name, schema);
+                todo!()
+            }
+            PageType::LeafIndex => {
+                println!("LeafIndex");
+                let parsed_cell = parse_leaf_index_cell(cell, usable_page_size)?;
+                if let Cell::LeafIndex {
+                    payload,
+                    first_overflow_page,
+                } = parsed_cell
+                {
+                    let parsed_payload = parse_payload(payload)?;
+                    println!(
+                        "\nParsed Leaf Index Cell {} at {}: {:?}",
+                        i, cell_pointer, parsed_payload
+                    );
                 }
             }
-        }
+            PageType::LeafTable => {
+                println!("LeafTable");
+                let parsed_cell = parse_leaf_table_cell(cell)?;
+                if let Cell::LeafTable { rowid, payload } = parsed_cell {
+                    let parsed_payload = parse_payload(&payload)?;
+                    let schema_table = extract_schema_table(&parsed_payload.columns)?;
+                    let columns = extract_table_columns(&parsed_payload.columns[4])?;
+
+                    if let SqliteValue::Integer(root_page) = schema_table.rootpage {
+                        master_schema_page.b_tree_pages.push(root_page as u32);
+                    }
+
+                    let schema = Schema {
+                        _type: schema_table._type.clone(),
+                        name: schema_table.name.clone(),
+                        rootpage: schema_table.rootpage,
+                        rowid,
+                        columns,
+                    };
+                    if let SqliteValue::Text(name) = schema_table.name {
+                        master_schema_page.map.insert(name, schema);
+                    }
+                }
+            }
+        };
     }
 
     Ok(master_schema_page)
@@ -804,10 +766,11 @@ fn extract_table_columns(sql_text: &SqliteValue) -> Result<HashMap<String, Strin
     Ok(map)
 }
 
-fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
+fn parse_page(page: &[u8], page_num: u32, usable_page_size: u16) -> Result<(), io::Error> {
+    println!("\nParsing Page {}", page_num);
     let offset: usize = if page_num == 1 { 100 } else { 0 };
     let page_header = parse_page_header(&page, page_num, offset)?;
-    println!("page_header={:?}", page_header);
+    println!("{:?}", page_header);
 
     let base = offset + page_header.size;
 
@@ -817,55 +780,55 @@ fn parse_page(page: &[u8], page_num: u32) -> Result<(), io::Error> {
         let cell_pointer = read_u16_from_page(&page, ptr_offset).unwrap();
         let cell = &page[(cell_pointer as usize)..];
 
-        let parsed_cell = match page_header.page_type {
-            PageType::InteriorIndex => parse_interior_index_cell(page, page_num)?,
-            PageType::InteriorTable => parse_interior_table_cell(page, page_num)?,
-            PageType::LeafIndex => parse_leaf_index_cell(page, page_num)?,
-            PageType::LeafTable => parse_leaf_table_cell(cell)?,
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Invalid Page Type -- Page {} type: {:?}",
-                    page_num, page_header.page_type
-                ),
-            ))?,
-        };
-        println!("\nparsed_cell {} at {}: {:?}", i, cell_pointer, parsed_cell);
-        match parsed_cell {
-            Cell::InteriorIndex {
-                left_child_page,
-                key,
-            } => todo!(),
-            Cell::InteriorTable {
-                left_child_page,
-                key,
-            } => todo!(),
-            Cell::LeafIndex { key } => todo!(),
-            Cell::LeafTable {
-                // payload_varint_size,
-                // rowid_varint_size,
-                rowid,
-                payload,
-            } => {
-                let parsed_payload = parse_payload(&payload)?;
-                println!("parsed_payload={:?}", parsed_payload);
-                dbg!(parsed_payload.columns);
+        match page_header.page_type {
+            PageType::InteriorIndex => {
+                println!("InteriorIndex");
+                parse_interior_index_cell(cell)?;
+                todo!()
             }
-        }
+            PageType::InteriorTable => {
+                println!("InteriorTable");
+                parse_interior_table_cell(cell)?;
+                todo!()
+            }
+            PageType::LeafIndex => {
+                println!("LeafIndex");
+                let parsed_cell: Cell<'_> = parse_leaf_index_cell(cell, usable_page_size)?;
+                if let Cell::LeafIndex {
+                    payload,
+                    first_overflow_page,
+                } = parsed_cell
+                {
+                    let parsed_payload = parse_payload(&payload)?;
+                    // println!("LeafIndex : {:?}", parsed_payload);
+                    println!(
+                        "Parsed Leaf Index Cell {} at {}: {:?}",
+                        i, cell_pointer, parsed_payload
+                    );
+                }
+            }
+            PageType::LeafTable => {
+                println!("LeafTable");
+
+                let parsed_cell = parse_leaf_table_cell(cell)?;
+                if let Cell::LeafTable { rowid, payload } = parsed_cell {
+                    let parsed_payload = parse_payload(&payload)?;
+                    println!(" LeafTable  parsed_payload={:?}", parsed_payload);
+                }
+            }
+        };
     }
 
     Ok(())
 }
 
 use crossterm::{
+    cursor,
     event::{self, Event, KeyCode},
-    terminal::{disable_raw_mode, enable_raw_mode},
-};
-
-use crossterm::{
-    cursor, execute,
+    execute,
     style::{Attribute, SetAttribute},
     terminal::{self, ClearType},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
 
 fn draw_table(
@@ -944,7 +907,7 @@ fn draw_menu(app_state: &AppState) -> io::Result<()> {
                 }
             }
 
-            write!(out, "\n{:?}", app_state)?;
+            // write!(out, "\n{:?}", app_state)?;
         }
         Mode::RowSelect => {
             match &app_state.active_table {
@@ -962,7 +925,7 @@ fn draw_menu(app_state: &AppState) -> io::Result<()> {
                 None => todo!(),
             }
 
-            write!(out, "\n{:?}", app_state)?;
+            // write!(out, "\n{:?}", app_state)?;
         }
     }
 
@@ -998,21 +961,6 @@ impl AppState {
         self.get_active_rowid()
             .and_then(|rowid| self.map.get(&rowid).cloned())
     }
-}
-
-fn wait_for_key() -> io::Result<()> {
-    println!("Press any key to continue…");
-
-    loop {
-        // poll blocks until an event occurs
-        let event = event::read()?;
-
-        if let Event::Key(_) = event {
-            break; // exit on any key press
-        }
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1110,9 +1058,11 @@ fn main() -> io::Result<()> {
     let mut file = File::open(path)?;
 
     let header = read_header(&mut file)?;
+    println!("{:?}", header);
     let master_schema_page = read_page(&mut file, header.page_size, 1)?;
 
-    let master_schema_page = parse_master_schema_page(&master_schema_page, 1)?;
+    let master_schema_page =
+        parse_master_schema_page(&master_schema_page, 1, header.usable_page_size)?;
     let mut app_state = AppState {
         mode: Mode::TableSelect,
         selected_table_idx: 0,
@@ -1126,9 +1076,11 @@ fn main() -> io::Result<()> {
 
     // wait_for_key()?;
 
-    for i in 2..=header.size_in_pages {
+    println!("Valid b-tree pages {:?}", master_schema_page.b_tree_pages);
+
+    for i in master_schema_page.b_tree_pages {
         let page = read_page(&mut file, header.page_size, i)?;
-        parse_page(&page, i)?;
+        parse_page(&page, i, header.usable_page_size)?;
     }
     enable_raw_mode()?; // important
     execute!(stdout(), cursor::Hide, terminal::EnterAlternateScreen)?;
