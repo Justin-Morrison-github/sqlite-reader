@@ -1,7 +1,22 @@
+mod cli;
+use cli::handle_key;
+use cli::{CliState, Mode};
+
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write, stdout};
 use std::path::PathBuf;
+use std::vec;
+
+use crossterm::{
+    cursor,
+    event::{self, Event},
+    execute,
+    style::{Attribute, SetAttribute},
+    terminal::{self, ClearType},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
 
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 
@@ -338,8 +353,7 @@ enum PageType {
     LeafIndex = 0x0a,
     LeafTable = 0x0d,
 }
-use std::convert::TryFrom;
-use std::vec;
+
 #[derive(Debug)]
 struct InvalidPageType(u8);
 
@@ -524,6 +538,19 @@ enum SqliteValue {
     Text(String),
     Blob(Vec<u8>),
 }
+impl SqliteValue {
+    pub fn to_str(&self) -> String {
+        match self {
+            SqliteValue::Null => String::from("Null"),
+            SqliteValue::Integer(i) => i.to_string(),
+            SqliteValue::Real(r) => format!("{:e}", r),
+            SqliteValue::Text(t) => t.to_string(),
+            SqliteValue::Blob(items) => {
+                format!("{:?}", items)
+            }
+        }
+    }
+}
 
 fn decode_payload_values(
     payload: &[u8],
@@ -645,7 +672,7 @@ pub struct Schema {
     name: SqliteValue,
     rootpage: SqliteValue,
     rowid: u64,
-    columns: HashMap<String, String>,
+    columns: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -735,38 +762,12 @@ fn parse_master_schema_page(
     Ok(master_schema_page)
 }
 
-fn extract_table_columns(sql_text: &SqliteValue) -> Result<HashMap<String, String>, io::Error> {
-    let mut map: HashMap<String, String> = HashMap::new();
-
-    if let SqliteValue::Text(s) = sql_text {
-        // Find the part inside the parentheses
-        if let Some(start) = s.find('(') {
-            if let Some(end) = s.rfind(')') {
-                let cols = &s[start + 1..end]; // slice inside ()
-                // Split by comma, handle each column definition
-                for col_def in cols.split(',') {
-                    let col_def = col_def.trim();
-                    if col_def.is_empty() {
-                        continue;
-                    }
-                    // Split by whitespace
-                    let mut parts = col_def.split_whitespace();
-                    if let Some(name) = parts.next() {
-                        if let Some(col_type) = parts.next() {
-                            map.insert(name.to_string(), col_type.to_string());
-                        } else {
-                            map.insert(name.to_string(), "".to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(map)
-}
-
-fn parse_page(page: &[u8], page_num: u32, usable_page_size: u16) -> Result<(), io::Error> {
+fn parse_page(
+    page: &[u8],
+    page_num: u32,
+    usable_page_size: u16,
+    app_state: &mut AppState,
+) -> Result<(), io::Error> {
     println!("\nParsing Page {}", page_num);
     let offset: usize = if page_num == 1 { 100 } else { 0 };
     let page_header = parse_page_header(&page, page_num, offset)?;
@@ -814,6 +815,7 @@ fn parse_page(page: &[u8], page_num: u32, usable_page_size: u16) -> Result<(), i
                 if let Cell::LeafTable { rowid, payload } = parsed_cell {
                     let parsed_payload = parse_payload(&payload)?;
                     println!(" LeafTable  parsed_payload={:?}", parsed_payload);
+                    app_state.rows.push(parsed_payload.columns);
                 }
             }
         };
@@ -821,15 +823,32 @@ fn parse_page(page: &[u8], page_num: u32, usable_page_size: u16) -> Result<(), i
 
     Ok(())
 }
+fn extract_table_columns(sql_text: &SqliteValue) -> Result<Vec<String>, io::Error> {
+    let mut columns: Vec<String> = Vec::new();
 
-use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode},
-    execute,
-    style::{Attribute, SetAttribute},
-    terminal::{self, ClearType},
-    terminal::{disable_raw_mode, enable_raw_mode},
-};
+    if let SqliteValue::Text(s) = sql_text {
+        // Find the part inside the parentheses
+        if let Some(start) = s.find('(') {
+            if let Some(end) = s.rfind(')') {
+                let cols = &s[start + 1..end]; // slice inside ()
+                // Split by comma, handle each column definition
+                for col_def in cols.split(',') {
+                    let col_def = col_def.trim();
+                    if col_def.is_empty() {
+                        continue;
+                    }
+                    // Split by whitespace
+                    let mut parts = col_def.split_whitespace();
+                    if let Some(name) = parts.next() {
+                        columns.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(columns)
+}
 
 fn draw_table(
     out: &mut impl std::io::Write,
@@ -871,14 +890,13 @@ fn draw_table(
     // rows
     for (i, row) in rows.iter().enumerate() {
         execute!(out, cursor::MoveTo(0, (i + 2) as u16))?;
-        if i == app_state.selected_row {
+        if i == app_state.cli_state.row_idx {
             write!(out, "> ")?;
         } else {
             write!(out, "  ")?;
         }
         write!(out, "|")?;
         for (j, cell) in row.iter().enumerate() {
-            // write!(out, " {} ", "-".repeat(*w))?;
             write!(out, " {:width$} ", cell, width = widths[j])?;
             write!(out, "|")?;
         }
@@ -888,17 +906,16 @@ fn draw_table(
     Ok(())
 }
 
-use std::io::{Write, stdout};
 fn draw_menu(app_state: &AppState) -> io::Result<()> {
     let mut out = stdout();
 
     execute!(out, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
 
-    match app_state.mode {
+    match app_state.cli_state.mode {
         Mode::TableSelect => {
             for table in app_state.items.iter() {
                 execute!(out, cursor::MoveTo(0, table.index as u16))?;
-                if table.index == app_state.selected_table_idx {
+                if table.index == app_state.cli_state.table_idx {
                     execute!(out, SetAttribute(Attribute::Reverse))?;
                     write!(out, "> {}", table.name)?;
                     execute!(out, SetAttribute(Attribute::Reset))?;
@@ -907,60 +924,25 @@ fn draw_menu(app_state: &AppState) -> io::Result<()> {
                 }
             }
 
-            // write!(out, "\n{:?}", app_state)?;
+            write!(out, "\n{:?}", app_state)?;
         }
         Mode::RowSelect => {
             match &app_state.active_table {
-                Some(table_map) => {
-                    let headers: Vec<String> =
-                        table_map.iter().map(|(key, _)| key.to_string()).collect();
-
-                    let rows: [Vec<String>; 2] = [
-                        vec!["David".to_string(), "1".to_string()],
-                        vec!["Elise".to_string(), "2".to_string()],
-                    ];
+                Some(table_columns) => {
+                    let headers: Vec<String> = table_columns.clone();
+                    let rows = app_state.get_active_rows();
 
                     draw_table(&mut out, &headers, &rows, &app_state)?;
                 }
                 None => todo!(),
             }
 
-            // write!(out, "\n{:?}", app_state)?;
+            write!(out, "\n{:?}", app_state)?;
         }
     }
 
     out.flush()?;
     Ok(())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Mode {
-    TableSelect,
-    RowSelect,
-}
-#[derive(Debug, Clone)]
-
-pub struct AppState {
-    mode: Mode,
-    selected_table_idx: usize,
-    selected_row: usize,
-    // tables: Vec<SchemaTable>,
-    items: Vec<TableUISelect>,
-    // table_column_map: HashMap<String, String>,
-    active_table: Option<HashMap<String, String>>,
-    // index_to_rowid: HashMap<usize, usize>,
-    map: HashMap<u64, HashMap<String, String>>,
-}
-
-impl AppState {
-    pub fn get_active_rowid(&self) -> Option<u64> {
-        self.items.get(self.selected_table_idx).map(|s| s.rowid)
-    }
-
-    pub fn get_active_table(&self) -> Option<HashMap<String, String>> {
-        self.get_active_rowid()
-            .and_then(|rowid| self.map.get(&rowid).cloned())
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -989,64 +971,41 @@ fn extract_table_name_rowid_map(
 
 fn extract_table_map(
     master_schema_page: &MasterSchemaPage,
-) -> Result<HashMap<u64, HashMap<String, String>>, io::Error> {
-    let mut items: HashMap<u64, HashMap<String, String>> = HashMap::new();
+) -> Result<HashMap<u64, Vec<String>>, io::Error> {
+    let mut items: HashMap<u64, Vec<String>> = HashMap::new();
     for (_, schema) in &master_schema_page.map {
         items.insert(schema.rowid, schema.columns.clone());
     }
     Ok(items)
 }
 
-fn handle_key(app_state: &mut AppState, key: KeyCode) -> bool {
-    match key {
-        KeyCode::Up => match app_state.mode {
-            Mode::TableSelect => {
-                app_state.selected_table_idx = app_state.selected_table_idx.saturating_sub(1);
-            }
-            Mode::RowSelect => {
-                app_state.selected_row = app_state.selected_row.saturating_sub(1);
-            }
-        },
-        KeyCode::Down => match app_state.mode {
-            Mode::TableSelect => {
-                if app_state.selected_table_idx + 1 < app_state.items.len() {
-                    app_state.selected_table_idx += 1;
-                }
-            }
-            Mode::RowSelect => {
-                if app_state.selected_row + 1 < app_state.items.len() {
-                    app_state.selected_row += 1;
-                }
-            }
-        },
-        KeyCode::Enter => match app_state.mode {
-            Mode::TableSelect => {
-                if !app_state.items.is_empty()
-                    && app_state.selected_table_idx == app_state.items.len() - 1
-                {
-                    return true; // signal quit
-                }
-                app_state.mode = Mode::RowSelect;
-            }
-            Mode::RowSelect => {}
-        },
+#[derive(Debug, Clone)]
 
-        KeyCode::Left => match &app_state.mode {
-            Mode::TableSelect => {}
-            Mode::RowSelect => app_state.mode = Mode::TableSelect,
-        },
-        KeyCode::Right => match app_state.mode {
-            Mode::TableSelect => {
-                app_state.mode = Mode::RowSelect;
-                app_state.active_table = app_state.get_active_table()
-            }
-            Mode::RowSelect => {}
-        },
-        // signal quit
-        KeyCode::Esc => return true,
-        _ => {}
+pub struct AppState {
+    cli_state: CliState,
+    items: Vec<TableUISelect>,
+    active_table: Option<Vec<String>>,
+    map: HashMap<u64, Vec<String>>,
+    rows: Vec<Vec<SqliteValue>>,
+    row_strings: Vec<Vec<String>>,
+}
+
+impl AppState {
+    pub fn get_active_rowid(&self) -> Option<u64> {
+        self.items.get(self.cli_state.table_idx).map(|s| s.rowid)
     }
-    false
+
+    pub fn get_active_table(&self) -> Option<Vec<String>> {
+        self.get_active_rowid()
+            .and_then(|rowid| self.map.get(&rowid).cloned())
+    }
+
+    pub fn get_active_rows(&self) -> Vec<Vec<String>> {
+        self.rows
+            .iter()
+            .map(|row| row.iter().map(|v| v.to_str()).collect())
+            .collect()
+    }
 }
 
 fn main() -> io::Result<()> {
@@ -1063,16 +1022,22 @@ fn main() -> io::Result<()> {
 
     let master_schema_page =
         parse_master_schema_page(&master_schema_page, 1, header.usable_page_size)?;
+    let items = extract_table_name_rowid_map(&master_schema_page)?;
+    let num_tables = items.len();
     let mut app_state = AppState {
-        mode: Mode::TableSelect,
-        selected_table_idx: 0,
-        selected_row: 0,
-        items: extract_table_name_rowid_map(&master_schema_page)?,
+        items: items,
         map: extract_table_map(&master_schema_page)?,
         active_table: None,
+        rows: Vec::new(),
+        row_strings: Vec::new(),
+        cli_state: CliState {
+            table_idx: 0,
+            row_idx: 0,
+            num_tables,
+            num_rows: 0,
+            mode: Mode::TableSelect,
+        },
     };
-    // println!("app_state={:?}", app_state);
-    // dbg!(master_schema_page);
 
     // wait_for_key()?;
 
@@ -1080,7 +1045,7 @@ fn main() -> io::Result<()> {
 
     for i in master_schema_page.b_tree_pages {
         let page = read_page(&mut file, header.page_size, i)?;
-        parse_page(&page, i, header.usable_page_size)?;
+        parse_page(&page, i, header.usable_page_size, &mut app_state)?;
     }
     enable_raw_mode()?; // important
     execute!(stdout(), cursor::Hide, terminal::EnterAlternateScreen)?;
@@ -1089,8 +1054,17 @@ fn main() -> io::Result<()> {
         draw_menu(&app_state)?;
 
         if let Event::Key(event) = event::read()? {
-            if handle_key(&mut app_state, event.code) {
-                break;
+            // if handle_key(&mut app_state, event.code) {
+            //     break;
+            // }
+            if let Some(signal) = handle_key(&mut app_state.cli_state, event.code) {
+                match signal {
+                    cli::Signal::Exit => break,
+                    cli::Signal::UpdateTable => {
+                        app_state.active_table = app_state.get_active_table()
+                    }
+                    cli::Signal::UpdateRow => app_state.row_strings = app_state.get_active_rows(),
+                }
             }
         }
     }
