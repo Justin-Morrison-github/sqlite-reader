@@ -867,17 +867,8 @@ fn draw_table(
     }
 
     // header
-    write!(out, "  |")?; // left margin
+    write_headers(out, headers, &mut widths)?;
 
-    for (i, h) in headers.iter().enumerate() {
-        write!(
-            out,
-            " {:width$} |",
-            h.to_ascii_uppercase(),
-            width = widths[i]
-        )?;
-    }
-    writeln!(out)?;
     execute!(out, cursor::MoveTo(0, 1 as u16))?;
 
     // separator
@@ -926,16 +917,8 @@ fn draw_one_row(
         }
     }
     // header
-    write!(out, "  |")?; // left margin
-    for (i, h) in headers.iter().enumerate() {
-        write!(
-            out,
-            " {:width$} |",
-            h.to_ascii_uppercase(),
-            width = widths[i]
-        )?;
-    }
-    writeln!(out)?;
+    write_headers(out, headers, &mut widths)?;
+
     execute!(out, cursor::MoveTo(0, 1 as u16))?;
 
     // separator line
@@ -969,6 +952,24 @@ fn move_and_clear_line<W: Write>(out: &mut W, row: u16) -> Result<(), io::Error>
     Ok(())
 }
 
+fn write_headers<W: Write>(
+    out: &mut W,
+    headers: &[String],
+    widths: &mut Vec<usize>,
+) -> Result<(), io::Error> {
+    write!(out, "  |")?; // left margin
+    for (i, h) in headers.iter().enumerate() {
+        write!(
+            out,
+            " {:width$} |",
+            h.to_ascii_uppercase(),
+            width = widths[i]
+        )?;
+    }
+    writeln!(out)?; // Go to next line after header
+    Ok(())
+}
+
 fn draw_edit_column(
     out: &mut impl std::io::Write,
     headers: &[String],
@@ -990,16 +991,7 @@ fn draw_edit_column(
         move_and_clear_line(out, 0)?;
 
         // header
-        write!(out, "  |")?; // left margin
-        for (i, h) in headers.iter().enumerate() {
-            write!(
-                out,
-                " {:width$} |",
-                h.to_ascii_uppercase(),
-                width = widths[i]
-            )?;
-        }
-        writeln!(out)?;
+        write_headers(out, headers, &mut widths)?;
         execute!(out, cursor::MoveTo(0, 1 as u16))?;
 
         // separator line
