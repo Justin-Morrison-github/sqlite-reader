@@ -872,12 +872,7 @@ fn draw_table(
     execute!(out, cursor::MoveTo(0, 1 as u16))?;
 
     // separator
-    write!(out, "  |")?;
-    for (i, w) in widths.iter().enumerate() {
-        if i == 0 {}
-        write!(out, " {} |", "-".repeat(*w))?;
-    }
-    writeln!(out)?;
+    write_seperator_line(out, &widths)?;
 
     // rows
     for (i, row) in rows.iter().enumerate() {
@@ -922,12 +917,7 @@ fn draw_one_row(
     execute!(out, cursor::MoveTo(0, 1 as u16))?;
 
     // separator line
-    write!(out, "  |")?;
-    for (i, w) in widths.iter().enumerate() {
-        if i == 0 {}
-        write!(out, " {} |", "-".repeat(*w))?;
-    }
-    writeln!(out)?;
+    write_seperator_line(out, &widths)?;
 
     // rows
     execute!(out, cursor::MoveTo(0, (2) as u16))?;
@@ -970,6 +960,16 @@ fn write_headers<W: Write>(
     Ok(())
 }
 
+fn write_seperator_line<W: Write>(out: &mut W, widths: &Vec<usize>) -> Result<(), io::Error> {
+    write!(out, "  |")?;
+    for w in widths.iter() {
+        write!(out, " {} |", "-".repeat(*w))?;
+    }
+    writeln!(out)?;
+
+    Ok(())
+}
+
 fn draw_edit_column(
     out: &mut impl std::io::Write,
     headers: &[String],
@@ -995,11 +995,7 @@ fn draw_edit_column(
         execute!(out, cursor::MoveTo(0, 1 as u16))?;
 
         // separator line
-        write!(out, "  |")?;
-        for w in widths.iter() {
-            write!(out, " {} |", "-".repeat(*w))?;
-        }
-        writeln!(out)?;
+        write_seperator_line(out, &widths)?;
 
         execute!(out, cursor::MoveTo(0, (2) as u16))?;
         write!(out, "  |")?;
