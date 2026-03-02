@@ -12,9 +12,10 @@ use std::vec;
 use crossterm::{
     cursor,
     event::{self, Event},
+    event::{KeyCode, KeyEventKind},
     execute,
     style::{Attribute, SetAttribute},
-    terminal::{self, ClearType},
+    terminal::{self, Clear, ClearType},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
@@ -906,10 +907,173 @@ fn draw_table(
     Ok(())
 }
 
-fn draw_menu(app_state: &AppState) -> io::Result<()> {
+fn draw_one_row(
+    out: &mut impl std::io::Write,
+    headers: &[String],
+    rows: &[String],
+    app_state: &AppState,
+) -> std::io::Result<()> {
+    // compute column widths
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+
+    // for (i, row) in rows.iter().enumerate() {
+    //     widths[i] = widths[i].max(row.len());
+    // }
+
+    for row in app_state.get_active_rows() {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+    // header
+    write!(out, "  |")?; // left margin
+    for (i, h) in headers.iter().enumerate() {
+        write!(
+            out,
+            " {:width$} |",
+            h.to_ascii_uppercase(),
+            width = widths[i]
+        )?;
+    }
+    writeln!(out)?;
+    execute!(out, cursor::MoveTo(0, 1 as u16))?;
+
+    // separator line
+    write!(out, "  |")?;
+    for (i, w) in widths.iter().enumerate() {
+        if i == 0 {}
+        write!(out, " {} |", "-".repeat(*w))?;
+    }
+    writeln!(out)?;
+
+    // rows
+    execute!(out, cursor::MoveTo(0, (2) as u16))?;
+    write!(out, "  |")?;
+    for (i, row) in rows.iter().enumerate() {
+        if i == app_state.cli_state.column_idx {
+            execute!(out, SetAttribute(Attribute::Reverse))?;
+            write!(out, " {:width$} ", row, width = widths[i])?;
+            execute!(out, SetAttribute(Attribute::Reset))?;
+        } else {
+            write!(out, " {:width$} ", row, width = widths[i])?;
+        }
+        write!(out, "|")?;
+    }
+
+    Ok(())
+}
+
+fn move_and_clear_line<W: Write>(out: &mut W, row: u16) -> Result<(), io::Error> {
+    execute!(out, cursor::MoveTo(0 as u16, row as u16))?;
+    execute!(out, Clear(ClearType::CurrentLine))?;
+    Ok(())
+}
+
+fn draw_edit_column(
+    out: &mut impl std::io::Write,
+    headers: &[String],
+    row: &[String],
+    app_state: &mut AppState,
+) -> std::io::Result<()> {
+    // compute column widths
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+
+    for row in app_state.get_active_rows() {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+    // row
+    let mut str = String::new();
+    loop {
+        // execute!(out, cursor::MoveTo(0, 0 as u16))?;
+        move_and_clear_line(out, 0)?;
+
+        // header
+        write!(out, "  |")?; // left margin
+        for (i, h) in headers.iter().enumerate() {
+            write!(
+                out,
+                " {:width$} |",
+                h.to_ascii_uppercase(),
+                width = widths[i]
+            )?;
+        }
+        writeln!(out)?;
+        execute!(out, cursor::MoveTo(0, 1 as u16))?;
+
+        // separator line
+        write!(out, "  |")?;
+        for w in widths.iter() {
+            write!(out, " {} |", "-".repeat(*w))?;
+        }
+        writeln!(out)?;
+
+        execute!(out, cursor::MoveTo(0, (2) as u16))?;
+        write!(out, "  |")?;
+
+        for (i, row) in row.iter().enumerate() {
+            if i == app_state.cli_state.column_idx {
+                execute!(out, SetAttribute(Attribute::Reverse))?;
+                write!(out, " {:width$} ", str, width = widths[i])?;
+                execute!(out, SetAttribute(Attribute::Reset))?;
+            } else {
+                write!(out, " {:width$} ", row, width = widths[i])?;
+            }
+            write!(out, "|")?;
+        }
+        out.flush()?; // Need this or row may not be fully printed
+
+        if let Event::Key(event) = event::read()? {
+            if event.kind == KeyEventKind::Press {
+                match event.code {
+                    KeyCode::Char(c) => {
+                        move_and_clear_line(out, 8)?;
+
+                        str += &c.to_string();
+                        write!(out, "{}", str)?;
+                        let index = app_state.cli_state.column_idx;
+                        widths[index] = widths[index].max(str.len());
+                        move_and_clear_line(out, 9)?;
+                        write!(out, "width={}", widths[index])?;
+                    }
+                    KeyCode::Esc => {
+                        // app_state.cli_state.mode = Mode::ColumnSelect;
+                        break;
+                    } // Exit on Esc
+                    KeyCode::Delete | KeyCode::Backspace => {
+                        if str.len() > 0 {
+                            move_and_clear_line(out, 8)?;
+
+                            let _ = str.remove(str.len() - 1);
+                            write!(out, "{}", str)?;
+
+                            // TODO find way to shrink cells in a smart way
+                            // let index = app_state.cli_state.column_idx;
+                            // widths[index] = widths[index].min(str.len());
+                        }
+
+                        {}
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn draw_menu(app_state: &mut AppState) -> io::Result<()> {
     let mut out = stdout();
 
     execute!(out, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
+
+    // execute!(out, cursor::MoveTo(0 as u16, 8 as u16))?;
+    // execute!(out, Clear(ClearType::CurrentLine))?;
+    move_and_clear_line(&mut out, 8)?;
+
+    println!("cli_state: {:?}", app_state.cli_state);
+
+    execute!(out, cursor::MoveTo(0 as u16, 0 as u16))?;
 
     match app_state.cli_state.mode {
         Mode::TableSelect => {
@@ -923,22 +1087,36 @@ fn draw_menu(app_state: &AppState) -> io::Result<()> {
                     write!(out, "  {}", table.name)?;
                 }
             }
-
-            write!(out, "\n{:?}", app_state)?;
         }
-        Mode::RowSelect => {
-            match &app_state.active_table {
-                Some(table_columns) => {
-                    let headers: Vec<String> = table_columns.clone();
-                    let rows = app_state.get_active_rows();
+        Mode::RowSelect => match &app_state.active_table {
+            Some(table_columns) => {
+                let headers: Vec<String> = table_columns.clone();
+                let rows = app_state.get_active_rows();
 
-                    draw_table(&mut out, &headers, &rows, &app_state)?;
-                }
-                None => todo!(),
+                draw_table(&mut out, &headers, &rows, &app_state)?;
             }
+            None => println!("Not implemented"),
+        },
+        Mode::ColumnSelect => match &app_state.active_table {
+            Some(table_columns) => {
+                let headers: Vec<String> = table_columns.clone();
+                let rows: Vec<String> = app_state.get_active_row();
 
-            write!(out, "\n{:?}", app_state)?;
-        }
+                draw_one_row(&mut out, &headers, &rows, &app_state)?;
+            }
+            None => println!("Not implemented"),
+        },
+        Mode::ColumnEdit => match &app_state.active_table {
+            Some(table_columns) => {
+                let headers: Vec<String> = table_columns.clone();
+                let rows: Vec<String> = app_state.get_active_row();
+                move_and_clear_line(&mut out, 12)?;
+                println!("row={:?}", rows);
+
+                draw_edit_column(&mut out, &headers, &rows, app_state)?;
+            }
+            None => println!("Not implemented"),
+        },
     }
 
     out.flush()?;
@@ -987,7 +1165,6 @@ pub struct AppState {
     active_table: Option<Vec<String>>,
     map: HashMap<u64, Vec<String>>,
     rows: Vec<Vec<SqliteValue>>,
-    row_strings: Vec<Vec<String>>,
 }
 
 impl AppState {
@@ -1005,6 +1182,26 @@ impl AppState {
             .iter()
             .map(|row| row.iter().map(|v| v.to_str()).collect())
             .collect()
+    }
+
+    pub fn get_active_row(&self) -> Vec<String> {
+        self.rows
+            .get(self.cli_state.row_idx)
+            .unwrap()
+            .iter()
+            .map(|v| v.to_str())
+            .collect()
+    }
+
+    pub fn get_rows_len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn get_num_columns(&self) -> usize {
+        match self.active_table.as_ref() {
+            Some(table) => table.len(),
+            None => 0,
+        }
     }
 }
 
@@ -1029,17 +1226,16 @@ fn main() -> io::Result<()> {
         map: extract_table_map(&master_schema_page)?,
         active_table: None,
         rows: Vec::new(),
-        row_strings: Vec::new(),
         cli_state: CliState {
             table_idx: 0,
             row_idx: 0,
+            column_idx: 0,
             num_tables,
             num_rows: 0,
+            num_columns: 0,
             mode: Mode::TableSelect,
         },
     };
-
-    // wait_for_key()?;
 
     println!("Valid b-tree pages {:?}", master_schema_page.b_tree_pages);
 
@@ -1051,19 +1247,23 @@ fn main() -> io::Result<()> {
     execute!(stdout(), cursor::Hide, terminal::EnterAlternateScreen)?;
 
     loop {
-        draw_menu(&app_state)?;
+        draw_menu(&mut app_state)?;
 
         if let Event::Key(event) = event::read()? {
-            // if handle_key(&mut app_state, event.code) {
-            //     break;
-            // }
             if let Some(signal) = handle_key(&mut app_state.cli_state, event.code) {
                 match signal {
                     cli::Signal::Exit => break,
                     cli::Signal::UpdateTable => {
                         app_state.active_table = app_state.get_active_table()
                     }
-                    cli::Signal::UpdateRow => app_state.row_strings = app_state.get_active_rows(),
+                    cli::Signal::UpdateRow => {
+                        app_state.cli_state.num_rows = app_state.get_rows_len();
+                        app_state.cli_state.num_columns = app_state.get_num_columns();
+                        println!("len={}", app_state.cli_state.num_columns)
+                    }
+                    cli::Signal::UpdateColumn => {
+                        // println!("UpdateColumn")
+                    }
                 }
             }
         }
